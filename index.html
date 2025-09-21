@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>AR Shooter Game</title>
+    <meta name="description" content="Simple AR Shooter Game">
+    <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/donmccurdy/aframe-extras@v6.1.1/dist/aframe-extras.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+        
+        #ui {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            text-align: center;
+        }
+        
+        #gameUI {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            z-index: 1000;
+            color: white;
+            font-size: 20px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
+        
+        button {
+            padding: 15px 30px;
+            font-size: 18px;
+            margin: 5px;
+            border: none;
+            border-radius: 5px;
+            background: #007bff;
+            color: white;
+            cursor: pointer;
+        }
+        
+        button:hover {
+            background: #0056b3;
+        }
+        
+        #crosshair {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            border: 2px solid white;
+            border-radius: 50%;
+            z-index: 999;
+            pointer-events: none;
+        }
+        
+        #gameOver {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 30px;
+            border-radius: 10px;
+            text-align: center;
+            z-index: 1001;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <!-- UI Elements -->
+    <div id="gameUI">
+        <div>Score: <span id="score">0</span></div>
+        <div>Health: <span id="health">❤️❤️❤️</span></div>
+    </div>
+    
+    <div id="crosshair"></div>
+    
+    <div id="ui">
+        <button id="startBtn">Start AR Game</button>
+        <div id="gameControls" style="display: none;">
+            <button id="fireBtn">Fire</button><br>
+            <button id="stopBtn">Stop Game</button>
+        </div>
+    </div>
+    
+    <div id="gameOver">
+        <h2>Game Over!</h2>
+        <p>Enemies Killed: <span id="finalScore">0</span></p>
+        <button id="restartBtn">Play Again</button>
+    </div>
+
+    <!-- A-Frame Scene -->
+    <a-scene embedded arjs="sourceType: webcam; debugUIEnabled: false;" vr-mode-ui="enabled: false">
+        <!-- Assets -->
+        <a-assets>
+            <!-- We'll define materials here -->
+        </a-assets>
+        
+        <!-- Camera -->
+        <a-camera id="camera" look-controls-enabled="false" wasd-controls-enabled="false"></a-camera>
+        
+        <!-- Entities will be spawned here -->
+    </a-scene>
+
+    <script>
+        // Game State Variables
+        let gameActive = false;
+        let score = 0;
+        let health = 3;
+        let enemies = [];
+        let projectiles = [];
+        let cameraRotation = null;
+        let spawnTimer = null;
+        
+        // Game Configuration
+        const ENEMY_SPAWN_INTERVAL = 1000; // 1 second
+        const ENEMY_SPEED = 0.01; // meters per frame
+        const PROJECTILE_SPEED = 0.2; // meters per frame
+        const ENEMY_ATTACK_DISTANCE = 1; // 1 meter
+        const FOV_DEGREES = 60; // 60 degree field of view
+        const SPAWN_DISTANCE = 10; // spawn enemies 10 meters away
+        
+        // Get DOM elements
+        const scene = document.querySelector('a-scene');
+        const camera = document.querySelector('#camera');
+        const startBtn = document.getElementById('startBtn');
+        const fireBtn = document.getElementById('fireBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const restartBtn = document.getElementById('restartBtn');
+        const gameControls = document.getElementById('gameControls');
+        const gameOverDiv = document.getElementById('gameOver');
+        const scoreDisplay = document.getElementById('score');
+        const healthDisplay = document.getElementById('health');
+        const finalScoreDisplay = document.getElementById('finalScore');
+        
+        // Utility Functions
+        function vibrate(duration = 50) {
+            if (navigator.vibrate) {
+                navigator.vibrate(duration);
+            }
+        }
+        
+        function updateUI() {
+            scoreDisplay.textContent = score;
+            const hearts = '❤️'.repeat(health) + '🤍'.repeat(3 - health);
+            healthDisplay.textContent = hearts;
+        }
+        
+        function degreesToRadians(degrees) {
+            return degrees * (Math.PI / 180);
+        }
+        
+        function getRandomSpawnPosition() {
+            // Get current camera rotation
+            const cameraEl = document.querySelector('#camera');
+            const rotation = cameraEl.getAttribute('rotation');
+            const cameraYaw = degreesToRadians(rotation.y);
+            
+            // Calculate FOV bounds
+            const fovHalf = degreesToRadians(FOV_DEGREES / 2);
+            const minAngle = cameraYaw - fovHalf;
+            const maxAngle = cameraYaw + fovHalf;
+            
+            // Random angle within FOV
+            const randomAngle = minAngle + Math.random() * (maxAngle - minAngle);
+            
+            // Calculate position
+            const x = Math.sin(randomAngle) * SPAWN_DISTANCE;
+            const z = Math.cos(randomAngle) * SPAWN_DISTANCE;
+            const y = Math.random() * 2 + 0.5; // Random height between 0.5 and 2.5 meters
+            
+            return { x, y, z };
+        }
+        
+        function createEnemy() {
+            const enemy = document.createElement('a-entity');
+            const position = getRandomSpawnPosition();
+            
+            // Random enemy type (cube or sphere)
+            const isBox = Math.random() > 0.5;
+            if (isBox) {
+                enemy.setAttribute('geometry', 'primitive: box; width: 0.5; height: 0.5; depth: 0.5');
+            } else {
+                enemy.setAttribute('geometry', 'primitive: sphere; radius: 0.25');
+            }
+            
+            enemy.setAttribute('material', 'color: #0066ff'); // Blue enemies
+            enemy.setAttribute('position', `${position.x} ${position.y} ${position.z}`);
+            enemy.classList.add('enemy');
+            
+            // Store initial position for movement calculation
+            enemy.userData = {
+                startPos: position,
+                isAttacking: false
+            };
+            
+            scene.appendChild(enemy);
+            enemies.push(enemy);
+        }
+        
+        function createProjectile() {
+            vibrate(20); // Quick vibration for firing
+            
+            const projectile = document.createElement('a-entity');
+            const cameraEl = document.querySelector('#camera');
+            const cameraPos = cameraEl.getAttribute('position');
+            const cameraRot = cameraEl.getAttribute('rotation');
+            
+            // Create small orange sphere
+            projectile.setAttribute('geometry', 'primitive: sphere; radius: 0.05');
+            projectile.setAttribute('material', 'color: #ff6600'); // Orange projectile
+            projectile.setAttribute('position', `${cameraPos.x} ${cameraPos.y} ${cameraPos.z}`);
+            
+            // Calculate direction based on camera rotation
+            const yawRad = degreesToRadians(cameraRot.y);
+            const pitchRad = degreesToRadians(cameraRot.x);
+            
+            const direction = {
+                x: Math.sin(yawRad) * Math.cos(pitchRad),
+                y: -Math.sin(pitchRad),
+                z: Math.cos(yawRad) * Math.cos(pitchRad)
+            };
+            
+            projectile.userData = {
+                direction: direction,
+                lifeTime: 0
+            };
+            
+            projectile.classList.add('projectile');
+            scene.appendChild(projectile);
+            projectiles.push(projectile);
+        }
+        
+        function checkCollisions() {
+            projectiles.forEach((projectile, pIndex) => {
+                const pPos = projectile.getAttribute('position');
+                
+                enemies.forEach((enemy, eIndex) => {
+                    const ePos = enemy.getAttribute('position');
+                    
+                    // Simple distance check for collision
+                    const distance = Math.sqrt(
+                        Math.pow(pPos.x - ePos.x, 2) +
+                        Math.pow(pPos.y - ePos.y, 2) +
+                        Math.pow(pPos.z - ePos.z, 2)
+                    );
+                    
+                    if (distance < 0.5) { // Hit!
+                        // Change enemy to yellow (dead)
+                        enemy.setAttribute('material', 'color: #ffff00');
+                        vibrate(100); // Longer vibration for hit
+                        
+                        // Remove after brief delay
+                        setTimeout(() => {
+                            if (enemy.parentNode) {
+                                enemy.parentNode.removeChild(enemy);
+                            }
+                        }, 200);
+                        
+                        // Remove projectile
+                        if (projectile.parentNode) {
+                            projectile.parentNode.removeChild(projectile);
+                        }
+                        
+                        // Update arrays
+                        enemies.splice(eIndex, 1);
+                        projectiles.splice(pIndex, 1);
+                        
+                        // Update score
+                        score++;
+                        updateUI();
+                    }
+                });
+            });
+        }
+        
+        function updateEnemies() {
+            const cameraPos = camera.getAttribute('position');
+            
+            enemies.forEach((enemy, index) => {
+                const enemyPos = enemy.getAttribute('position');
+                
+                // Calculate direction towards camera
+                const dirX = cameraPos.x - enemyPos.x;
+                const dirY = cameraPos.y - enemyPos.y;
+                const dirZ = cameraPos.z - enemyPos.z;
+                
+                // Normalize direction
+                const length = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
+                const normalizedDir = {
+                    x: dirX / length,
+                    y: dirY / length,
+                    z: dirZ / length
+                };
+                
+                // Move enemy towards player
+                const newPos = {
+                    x: enemyPos.x + normalizedDir.x * ENEMY_SPEED,
+                    y: enemyPos.y + normalizedDir.y * ENEMY_SPEED,
+                    z: enemyPos.z + normalizedDir.z * ENEMY_SPEED
+                };
+                
+                enemy.setAttribute('position', `${newPos.x} ${newPos.y} ${newPos.z}`);
+                
+                // Check if enemy is close enough to attack
+                if (length < ENEMY_ATTACK_DISTANCE && !enemy.userData.isAttacking) {
+                    enemy.userData.isAttacking = true;
+                    enemy.setAttribute('material', 'color: #ff0000'); // Red for attacking
+                    vibrate(200); // Strong vibration for attack
+                    
+                    // Damage player
+                    health--;
+                    updateUI();
+                    
+                    // Remove enemy after attack
+                    setTimeout(() => {
+                        if (enemy.parentNode) {
+                            enemy.parentNode.removeChild(enemy);
+                        }
+                        enemies.splice(index, 1);
+                    }, 500);
+                    
+                    // Check game over
+                    if (health <= 0) {
+                        endGame();
+                    }
+                }
+            });
+        }
+        
+        function updateProjectiles() {
+            projectiles.forEach((projectile, index) => {
+                const pos = projectile.getAttribute('position');
+                const userData = projectile.userData;
+                
+                // Move projectile
+                const newPos = {
+                    x: pos.x + userData.direction.x * PROJECTILE_SPEED,
+                    y: pos.y + userData.direction.y * PROJECTILE_SPEED,
+                    z: pos.z + userData.direction.z * PROJECTILE_SPEED
+                };
+                
+                projectile.setAttribute('position', `${newPos.x} ${newPos.y} ${newPos.z}`);
+                
+                // Remove projectile after 3 seconds
+                userData.lifeTime++;
+                if (userData.lifeTime > 180) { // 60fps * 3 seconds
+                    if (projectile.parentNode) {
+                        projectile.parentNode.removeChild(projectile);
+                    }
+                    projectiles.splice(index, 1);
+                }
+            });
+        }
+        
+        function gameLoop() {
+            if (!gameActive) return;
+            
+            updateEnemies();
+            updateProjectiles();
+            checkCollisions();
+            
+            requestAnimationFrame(gameLoop);
+        }
+        
+        function startGame() {
+            gameActive = true;
+            score = 0;
+            health = 3;
+            enemies = [];
+            projectiles = [];
+            
+            // Switch UI
+            startBtn.style.display = 'none';
+            gameControls.style.display = 'block';
+            gameOverDiv.style.display = 'none';
+            
+            updateUI();
+            
+            // Start enemy spawning
+            spawnTimer = setInterval(createEnemy, ENEMY_SPAWN_INTERVAL);
+            
+            // Start game loop
+            gameLoop();
+        }
+        
+        function endGame() {
+            gameActive = false;
+            
+            // Clear spawn timer
+            if (spawnTimer) {
+                clearInterval(spawnTimer);
+            }
+            
+            // Clear enemies and projectiles
+            enemies.forEach(enemy => {
+                if (enemy.parentNode) {
+                    enemy.parentNode.removeChild(enemy);
+                }
+            });
+            
+            projectiles.forEach(projectile => {
+                if (projectile.parentNode) {
+                    projectile.parentNode.removeChild(projectile);
+                }
+            });
+            
+            enemies = [];
+            projectiles = [];
+            
+            // Show game over screen
+            finalScoreDisplay.textContent = score;
+            gameOverDiv.style.display = 'block';
+            gameControls.style.display = 'none';
+        }
+        
+        function stopGame() {
+            endGame();
+            startBtn.style.display = 'block';
+        }
+        
+        // Event Listeners
+        startBtn.addEventListener('click', startGame);
+        fireBtn.addEventListener('click', createProjectile);
+        stopBtn.addEventListener('click', stopGame);
+        restartBtn.addEventListener('click', () => {
+            gameOverDiv.style.display = 'none';
+            startGame();
+        });
+        
+        // Initialize
+        updateUI();
+    </script>
+</body>
+</html>
